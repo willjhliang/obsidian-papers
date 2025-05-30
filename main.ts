@@ -6,10 +6,11 @@ import {
     PluginSettingTab,
     Setting,
     SuggestModal,
+    TFile,
     requestUrl,
 } from "obsidian";
 
-import stringSimilarity from "string-similarity";
+import compareTwoStrings from 'string-similarity-js';
 
 interface Settings {
     notesFolder: string;
@@ -69,7 +70,7 @@ export default class PapersPlugin extends Plugin {
     showImportModal() {
         new ImportSelectModal(this.app, async (choice) => {
             if (!choice) return;
-            
+
             if (choice.isArxivUrl) {
                 await this.processArxivUrl(choice.input);
             } else {
@@ -90,7 +91,7 @@ export default class PapersPlugin extends Plugin {
             new Notice("Could not find metadata for the arXiv paper.");
             return;
         }
-        
+
         await this.createNoteFromMetadata(metadata);
     }
 
@@ -108,7 +109,7 @@ export default class PapersPlugin extends Plugin {
 
         const modal = new ImportSelectModal(this.app, async (choice) => {
             if (!choice) return;
-            
+
             if (choice.isArxivUrl) {
                 await this.processArxivUrl(choice.input);
             } else {
@@ -134,8 +135,8 @@ export default class PapersPlugin extends Plugin {
 
     async createNoteFromMetadata(metadata: PaperMetadata) {
         const filename = this.sanitizeFileName(metadata.title) + ".md";
-        const folderPath = this.settings.notesFolder?.trim() 
-            ? this.settings.notesFolder.trim().replace(/\/$/, "") + "/" 
+        const folderPath = this.settings.notesFolder?.trim()
+            ? this.settings.notesFolder.trim().replace(/\/$/, "") + "/"
             : "";
         const filePath = folderPath + filename;
 
@@ -157,15 +158,17 @@ export default class PapersPlugin extends Plugin {
         try {
             if (fileExists) {
                 const file = await this.app.vault.getAbstractFileByPath(filePath);
-                await this.app.vault.modify(file, content);
+                if (file instanceof TFile) {
+                    await this.app.vault.modify(file, content);
+                }
             } else {
                 await this.app.vault.create(filePath, content);
             }
-            
+
             new Notice("Created paper note: " + filename);
-            
+
             const file = await this.app.vault.getAbstractFileByPath(filePath);
-            if (file) {
+            if (file instanceof TFile) {
                 await this.app.workspace.getLeaf(true).openFile(file);
             }
         } catch (err) {
@@ -178,8 +181,8 @@ export default class PapersPlugin extends Plugin {
         if (!arxivId) throw new Error("Could not extract arXiv ID from URL");
 
         const pdfFilename = this.sanitizeFileName(metadata.title) + ".pdf";
-        const pdfFolderPath = this.settings.pdfFolder?.trim() 
-            ? this.settings.pdfFolder.trim().replace(/\/$/, "") + "/" 
+        const pdfFolderPath = this.settings.pdfFolder?.trim()
+            ? this.settings.pdfFolder.trim().replace(/\/$/, "") + "/"
             : "";
 
         if (pdfFolderPath && !(await this.app.vault.adapter.exists(pdfFolderPath.slice(0, -1)))) {
@@ -189,12 +192,11 @@ export default class PapersPlugin extends Plugin {
         const pdfPath = pdfFolderPath + pdfFilename;
 
         if (await this.app.vault.adapter.exists(pdfPath)) {
-            new Notice(`PDF already exists: ${pdfFilename}`);
             return pdfFilename;
         }
 
         const progressNotice = new Notice("", 0);
-        
+
         try {
             const pdfUrl = `https://arxiv.org/pdf/${arxivId}.pdf`;
             progressNotice.setMessage(`Downloading PDF for "${metadata.title}"...`);
@@ -210,7 +212,7 @@ export default class PapersPlugin extends Plugin {
 
             const uint8Array = new Uint8Array(response.arrayBuffer);
             await this.app.vault.adapter.writeBinary(pdfPath, uint8Array);
-            
+
             progressNotice.hide();
             return pdfFilename;
         } catch (error) {
@@ -304,7 +306,7 @@ class ImportSelectModal extends SuggestModal<PaperMetadata> {
 
     onOpen() {
         super.onOpen();
-        
+
         if (this.resultContainerEl) {
             this.resultContainerEl.style.display = 'none';
         }
@@ -334,12 +336,12 @@ class ImportSelectModal extends SuggestModal<PaperMetadata> {
         const sanitized = sanitizeTitle(query);
         return this.choices
             .filter(choice => {
-                const sim = stringSimilarity.compareTwoStrings(sanitizeTitle(choice.title), sanitized);
+                const sim = compareTwoStrings(sanitizeTitle(choice.title), sanitized);
                 return sim > 0.3;
             })
             .sort((a, b) => {
-                const simA = stringSimilarity.compareTwoStrings(sanitizeTitle(a.title), sanitized);
-                const simB = stringSimilarity.compareTwoStrings(sanitizeTitle(b.title), sanitized);
+                const simA = compareTwoStrings(sanitizeTitle(a.title), sanitized);
+                const simB = compareTwoStrings(sanitizeTitle(b.title), sanitized);
                 return simB - simA;
             });
     }
@@ -355,14 +357,12 @@ class ImportSelectModal extends SuggestModal<PaperMetadata> {
         this.onChoice(item);
     }
 
-    onInputChanged(): void {
-        super.onInputChanged();
-
-        if (!this.hasSearched && !this.loading) {
-            this.emptyStateText = this.currentInput.trim() 
-                ? "Press Enter to search or import" 
-                : "Enter paper title or arXiv URL...";
-        }
+    manualRefresh() {
+        setTimeout(() => {
+            if (this.inputEl) {
+                this.inputEl.dispatchEvent(new Event('input', { bubbles: true }));
+            }
+        }, 0);
     }
 
     async performSearch() {
@@ -387,13 +387,13 @@ class ImportSelectModal extends SuggestModal<PaperMetadata> {
             this.loading = false;
             this.hasSearched = true;
             if (this.inputEl) this.inputEl.disabled = false;
-            this.onInput();
+            this.manualRefresh();
         }
     }
 
     setLoading(isLoading: boolean) {
         this.loading = isLoading;
-        
+
         if (this.inputEl) this.inputEl.disabled = isLoading;
 
         if (isLoading) {
@@ -402,7 +402,7 @@ class ImportSelectModal extends SuggestModal<PaperMetadata> {
             if (this.resultContainerEl) this.resultContainerEl.style.display = '';
         }
 
-        this.onInput();
+        this.manualRefresh();
     }
 
     setSearchResults(results: PaperMetadata[]) {
@@ -411,11 +411,11 @@ class ImportSelectModal extends SuggestModal<PaperMetadata> {
         this.choices = results;
 
         if (this.resultContainerEl) this.resultContainerEl.style.display = '';
-        
+
         this.emptyStateText = results.length === 0 ? "No results found" : "No matching results";
-        
+
         if (this.inputEl) this.inputEl.disabled = false;
-        this.onInput();
+        this.manualRefresh();
     }
 
     async searchArxivByTitle(title: string, maxRetries = 3): Promise<PaperMetadata[]> {
@@ -458,7 +458,7 @@ class ImportSelectModal extends SuggestModal<PaperMetadata> {
                 await new Promise(resolve => setTimeout(resolve, delay));
 
                 this.emptyStateText = `Searching arXiv... (retry ${attempt + 1}/${maxRetries})`;
-                this.onInput();
+                this.manualRefresh();
             }
         }
         return [];
@@ -487,7 +487,7 @@ class ConfirmOverwriteModal extends Modal {
         const buttonContainer = contentEl.createDiv({ cls: "modal-button-container" });
         Object.assign(buttonContainer.style, {
             display: "flex",
-            justifyContent: "flex-end", 
+            justifyContent: "flex-end",
             gap: "10px",
             marginTop: "30px"
         });
@@ -570,7 +570,7 @@ class PapersSettingTab extends PluginSettingTab {
         if (controlEl) {
             Object.assign(controlEl.style, {
                 width: "100%",
-                maxWidth: "none", 
+                maxWidth: "none",
                 marginTop: "10px"
             });
         }

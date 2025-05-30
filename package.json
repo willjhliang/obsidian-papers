@@ -22,6 +22,6 @@
 		"typescript": "4.7.4"
 	},
 	"dependencies": {
-		"string-similarity": "^4.0.4"
+		"string-similarity-js": "^2.1.4"
 	}
 }
