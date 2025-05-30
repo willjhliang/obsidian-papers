@@ -1,0 +1,10 @@
+{
+	"id": "obsidian-papers",
+	"name": "Papers",
+	"version": "1.0.0",
+	"minAppVersion": "0.15.0",
+	"description": "Retrieve and import research papers into Obsidian.",
+	"author": "William Liang",
+	"authorUrl": "https://willjhliang.github.io",
+	"isDesktopOnly": false
+}
