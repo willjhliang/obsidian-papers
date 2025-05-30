@@ -7,15 +7,20 @@ import {
     Setting,
     SuggestModal,
 } from "obsidian";
+import { requestUrl } from "obsidian";
 
 import stringSimilarity from "string-similarity";
 
 interface ArxivPluginSettings {
     notesFolder: string;
+    downloadPDF: boolean;
+    pdfFolder: string;
 }
 
 const DEFAULT_SETTINGS: ArxivPluginSettings = {
     notesFolder: "",
+    downloadPDF: false,
+    pdfFolder: "",
 };
 
 function sanitizeTitleForSearch(title: string): string {
@@ -50,7 +55,6 @@ export default class ArxivPlugin extends Plugin {
         const arxivId = arxivIdMatch ? arxivIdMatch[2] : null;
 
         if (arxivId) {
-            // Directly fetch metadata by ID, no modal needed
             const metadata = await this.fetchArxivMetadata(arxivId);
             if (!metadata) {
                 new Notice("Could not find metadata for the input.");
@@ -60,29 +64,29 @@ export default class ArxivPlugin extends Plugin {
             return;
         }
 
-        // Open modal immediately with loading placeholder
-        const loadingChoice = [
-            { title: "Loading...", authors: [], year: 0, url: "" },
-        ];
-        const modal = new TitleSelectModal(this.app, loadingChoice, async (choice) => {
-            if (!choice || !choice.title || choice.title === "Loading...") {
+        // Open modal with empty choices, but with "Loading..." placeholder
+        const modal = new TitleSelectModal(this.app, [], async (choice) => {
+            if (!choice || !choice.title || choice.title.startsWith("Search for")) {
                 new Notice("Cancelled or no selection.");
                 return;
             }
             await this.createNoteFromMetadata(choice);
-        });
+        }, clipboardText);
 
+        modal.setLoading(true); // NEW: tell modal it’s loading
         modal.open();
 
-        // Fetch search results from arXiv and update modal choices
+        // Fetch search results
         const results = await this.searchArxivByTitle(clipboardText);
+
         if (!results || results.length === 0) {
             modal.updateChoices([
                 { title: "No results found", authors: [], year: 0, url: "" },
             ]);
-            return;
+        } else {
+            modal.updateChoices(results);
         }
-        modal.updateChoices(results);
+        modal.setLoading(false); // NEW: loading done
     }
 
     async createNoteFromMetadata(metadata: {
@@ -91,7 +95,8 @@ export default class ArxivPlugin extends Plugin {
         year: number;
         url: string;
     }) {
-        const filename = this.sanitizeFileName(metadata.title) + ".md";
+        const baseName = this.sanitizeFileName(metadata.title);
+        const filename = baseName + ".md";
         const folderPath = this.settings.notesFolder?.trim()
             ? this.settings.notesFolder.trim().replace(/\/$/, "") + "/"
             : "";
@@ -103,7 +108,23 @@ export default class ArxivPlugin extends Plugin {
             if (!shouldOverwrite) return;
         }
 
-        const content = this.formatNoteContent(metadata);
+        let pdfEmbed = "";
+        if (this.settings.downloadPDF) {
+            const pdfFolderPath = this.settings.pdfFolder?.trim()
+                ? this.settings.pdfFolder.trim().replace(/\/$/, "") + "/"
+                : "";
+            const pdfName = baseName + ".pdf";
+            const pdfPath = pdfFolderPath + pdfName;
+
+            try {
+                await this.downloadPdf(metadata.url, pdfPath);
+                pdfEmbed = `\n![[${pdfName}]]`;
+            } catch (err) {
+                new Notice("PDF download failed: " + err);
+            }
+        }
+
+        const content = this.formatNoteContent(metadata) + pdfEmbed;
 
         try {
             if (fileExists) {
@@ -116,6 +137,25 @@ export default class ArxivPlugin extends Plugin {
         } catch (err) {
             new Notice("Error creating note: " + err);
         }
+    }
+
+
+    async downloadPdf(arxivUrl: string, savePath: string) {
+        const idMatch = arxivUrl.match(/\/(\d{4}\.\d{4,5})(v\d+)?$/);
+        if (!idMatch) throw new Error("Invalid arXiv ID");
+
+        const arxivId = idMatch[1];
+        const pdfUrl = `https://arxiv.org/pdf/${arxivId}.pdf`;
+
+        const response = await requestUrl({ url: pdfUrl });
+        const buffer = response.arrayBuffer;
+
+        if (!buffer) {
+            throw new Error("Failed to download PDF content");
+        }
+
+        const uint8Array = new Uint8Array(buffer);
+        await this.app.vault.adapter.writeBinary(savePath, uint8Array);
     }
 
     async fetchArxivMetadata(arxivId: string) {
@@ -222,41 +262,60 @@ tags:
 class TitleSelectModal extends SuggestModal<any> {
     choices: any[];
     onChoice: (choice: any | null) => void;
+    loading: boolean = false;
+    searchQuery: string;
 
-    constructor(app: App, choices: any[], onChoice: (choice: any | null) => void) {
+    constructor(app: App, choices: any[], onChoice: (choice: any | null) => void, searchQuery: string) {
         super(app);
         this.choices = choices;
         this.onChoice = onChoice;
+        this.searchQuery = searchQuery;
+    }
+
+    onOpen() {
+        super.onOpen();
+        this.setLoading(this.loading, this.searchQuery);
+    }
+
+    setLoading(isLoading: boolean, queryText?: string) {
+        this.loading = isLoading;
+        if (this.inputEl) {
+            if (isLoading && queryText) {
+                this.inputEl.placeholder = `Searching for "${queryText.trim()}"...`;
+            } else {
+                this.inputEl.placeholder = "Select...";
+            }
+        }
     }
 
     updateChoices(newChoices: any[]) {
         this.choices = newChoices;
+        this.setLoading(false); // stop showing loading once results are in
         this.onInput(); // refresh suggestions UI
     }
 
     getSuggestions(query: string) {
-        if (!query) return this.choices;
+        const normalizedQuery = sanitizeTitleForSearch(this.searchQuery);
 
-        const normalizedQuery = sanitizeTitleForSearch(query);
         return this.choices
-            .filter((c) => {
+            .filter(choice => {
                 const sim = stringSimilarity.compareTwoStrings(
-                    sanitizeTitleForSearch(c.title),
+                    sanitizeTitleForSearch(choice.title),
                     normalizedQuery
                 );
                 return sim > 0.5;
             })
-            .sort(
-                (a, b) =>
-                    stringSimilarity.compareTwoStrings(
-                        sanitizeTitleForSearch(b.title),
-                        normalizedQuery
-                    ) -
-                    stringSimilarity.compareTwoStrings(
-                        sanitizeTitleForSearch(a.title),
-                        normalizedQuery
-                    )
-            );
+            .sort((a, b) => {
+                const simA = stringSimilarity.compareTwoStrings(
+                    sanitizeTitleForSearch(a.title),
+                    normalizedQuery
+                );
+                const simB = stringSimilarity.compareTwoStrings(
+                    sanitizeTitleForSearch(b.title),
+                    normalizedQuery
+                );
+                return simB - simA;
+            });
     }
 
     renderSuggestion(choice: any, el: HTMLElement) {
@@ -346,6 +405,31 @@ class ArxivSettingTab extends PluginSettingTab {
                     .setValue(this.plugin.settings.notesFolder)
                     .onChange(async (value) => {
                         this.plugin.settings.notesFolder = value;
+                        await this.plugin.saveSettings();
+                    })
+            );
+
+        new Setting(containerEl)
+            .setName("Download PDFs")
+            .setDesc("Download PDF files for arXiv papers")
+            .addToggle((toggle) =>
+                toggle
+                    .setValue(this.plugin.settings.downloadPDF)
+                    .onChange(async (value) => {
+                        this.plugin.settings.downloadPDF = value;
+                        await this.plugin.saveSettings();
+                    })
+            );
+
+        new Setting(containerEl)
+            .setName("PDF folder")
+            .setDesc("Folder to save downloaded PDFs (relative to vault root)")
+            .addText((text) =>
+                text
+                    .setPlaceholder("Example: Literature/arXiv/pdfs")
+                    .setValue(this.plugin.settings.pdfFolder)
+                    .onChange(async (value) => {
+                        this.plugin.settings.pdfFolder = value;
                         await this.plugin.saveSettings();
                     })
             );
