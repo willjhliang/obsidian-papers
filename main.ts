@@ -6,8 +6,8 @@ import {
     PluginSettingTab,
     Setting,
     SuggestModal,
+    requestUrl,
 } from "obsidian";
-import { requestUrl } from "obsidian";
 
 import stringSimilarity from "string-similarity";
 
@@ -95,8 +95,7 @@ export default class ArxivPlugin extends Plugin {
         year: number;
         url: string;
     }) {
-        const baseName = this.sanitizeFileName(metadata.title);
-        const filename = baseName + ".md";
+        const filename = this.sanitizeFileName(metadata.title) + ".md";
         const folderPath = this.settings.notesFolder?.trim()
             ? this.settings.notesFolder.trim().replace(/\/$/, "") + "/"
             : "";
@@ -108,23 +107,7 @@ export default class ArxivPlugin extends Plugin {
             if (!shouldOverwrite) return;
         }
 
-        let pdfEmbed = "";
-        if (this.settings.downloadPDF) {
-            const pdfFolderPath = this.settings.pdfFolder?.trim()
-                ? this.settings.pdfFolder.trim().replace(/\/$/, "") + "/"
-                : "";
-            const pdfName = baseName + ".pdf";
-            const pdfPath = pdfFolderPath + pdfName;
-
-            try {
-                await this.downloadPdf(metadata.url, pdfPath);
-                pdfEmbed = `\n![[${pdfName}]]`;
-            } catch (err) {
-                new Notice("PDF download failed: " + err);
-            }
-        }
-
-        const content = this.formatNoteContent(metadata) + pdfEmbed;
+        const content = this.formatNoteContent(metadata);
 
         try {
             if (fileExists) {
@@ -134,6 +117,12 @@ export default class ArxivPlugin extends Plugin {
                 await this.app.vault.create(filePath, content);
             }
             new Notice("Created arXiv note: " + filename);
+
+            // Open the newly created note
+            const file = await this.app.vault.getAbstractFileByPath(filePath);
+            if (file) {
+                await this.app.workspace.getLeaf(true).openFile(file);
+            }
         } catch (err) {
             new Notice("Error creating note: " + err);
         }
