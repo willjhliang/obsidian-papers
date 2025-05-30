@@ -13,14 +13,21 @@ import stringSimilarity from "string-similarity";
 
 interface Settings {
     notesFolder: string;
-    downloadPDF: boolean;
     pdfFolder: string;
+    noteTemplate: string;
 }
 
 const DEFAULT_SETTINGS: Settings = {
     notesFolder: "",
-    downloadPDF: false,
     pdfFolder: "",
+    noteTemplate: `---
+title: "{{TITLE}}"
+authors:
+{{AUTHORS}}
+year: {{YEAR}}
+url: {{URL}}
+---
+![[{{PDF}}]]`,
 };
 
 function sanitizeTitle(title: string): string {
@@ -38,15 +45,15 @@ export default class PapersPlugin extends Plugin {
         await this.loadSettings();
 
         this.addCommand({
-            id: "import-from-clipboard",
-            name: "Import from Clipboard",
-            callback: () => this.createNoteFromClipboard(),
+            id: "import",
+            name: "Import",
+            callback: () => this.showImportModal(),
         });
 
         this.addCommand({
-            id: "import-paper",
-            name: "Import Paper",
-            callback: () => this.showImportModal(),
+            id: "import-from-clipboard",
+            name: "Import from Clipboard",
+            callback: () => this.createNoteFromClipboard(),
         });
 
         this.addSettingTab(new PapersSettingTab(this.app, this));
@@ -150,7 +157,21 @@ export default class PapersPlugin extends Plugin {
             if (!shouldOverwrite) return;
         }
 
-        const content = this.formatNoteContent(metadata);
+        // Check if PDF download is needed ({{PDF}} placeholder exists)
+        let pdfFilename = "";
+        const needsPdf = this.settings.noteTemplate.includes("{{PDF}}");
+        
+        if (needsPdf && metadata.url.includes('arxiv.org')) {
+            try {
+                pdfFilename = await this.downloadPdfFromMetadata(metadata);
+            } catch (error) {
+                new Notice(`PDF download failed: ${error.message}`);
+                console.error("PDF download error:", error);
+                // Continue with note creation without PDF
+            }
+        }
+
+        const content = this.formatNoteContent(metadata, pdfFilename);
 
         try {
             if (fileExists) {
@@ -159,17 +180,7 @@ export default class PapersPlugin extends Plugin {
             } else {
                 await this.app.vault.create(filePath, content);
             }
-            new Notice("Created arXiv note: " + filename);
-
-            // ADD THIS: Download PDF if enabled
-            if (this.settings.downloadPDF && metadata.url.includes('arxiv.org')) {
-                try {
-                    await this.downloadPdfFromMetadata(metadata);
-                } catch (error) {
-                    new Notice(`Note created but PDF download failed: ${error.message}`);
-                    console.error("PDF download error:", error);
-                }
-            }
+            new Notice("Created paper note: " + filename);
 
             // Open the newly created note
             const file = await this.app.vault.getAbstractFileByPath(filePath);
@@ -180,70 +191,94 @@ export default class PapersPlugin extends Plugin {
             new Notice("Error creating note: " + err);
         }
     }
-    async downloadPdfFromMetadata(metadata: { title: string; url: string }) {
-        // Extract arXiv ID from URL
-        const idMatch = metadata.url.match(/arxiv\.org\/abs\/(\d{4}\.\d{4,5})(v\d+)?/);
-        if (!idMatch) {
-            throw new Error("Could not extract arXiv ID from URL");
-        }
+// Replace your downloadPdfFromMetadata method with this enhanced version:
 
-        const arxivId = idMatch[1];
-        const pdfFilename = this.sanitizeFileName(metadata.title) + ".pdf";
-
-        // Setup PDF folder path
-        const pdfFolderPath = this.settings.pdfFolder?.trim()
-            ? this.settings.pdfFolder.trim().replace(/\/$/, "") + "/"
-            : "";
-
-        // Check if PDF folder exists
-        if (pdfFolderPath && !(await this.app.vault.adapter.exists(pdfFolderPath.slice(0, -1)))) {
-            throw new Error(`PDF folder "${this.settings.pdfFolder}" doesn't exist. Please create it first.`);
-        }
-
-        const pdfPath = pdfFolderPath + pdfFilename;
-
-        // Check if PDF already exists
-        if (await this.app.vault.adapter.exists(pdfPath)) {
-            new Notice(`PDF already exists: ${pdfFilename}`);
-            return;
-        }
-
-        new Notice(`Downloading PDF: ${pdfFilename}...`);
-
-        try {
-            await this.downloadPdf(metadata.url, pdfPath);
-            new Notice(`PDF downloaded: ${pdfFilename}`);
-        } catch (error) {
-            throw new Error(`Failed to download PDF: ${error.message}`);
-        }
+async downloadPdfFromMetadata(metadata: { title: string; url: string }): Promise<string> {
+    // Extract arXiv ID from URL
+    const idMatch = metadata.url.match(/arxiv\.org\/abs\/(\d{4}\.\d{4,5})(v\d+)?/);
+    if (!idMatch) {
+        throw new Error("Could not extract arXiv ID from URL");
     }
 
-    async downloadPdf(arxivUrl: string, savePath: string) {
-        // Extract arXiv ID from URL (handle both abs and direct URLs)
-        const idMatch = arxivUrl.match(/arxiv\.org\/(abs|pdf)\/(\d{4}\.\d{4,5})(v\d+)?/);
-        if (!idMatch) throw new Error("Invalid arXiv URL");
+    const arxivId = idMatch[1];
+    const pdfFilename = this.sanitizeFileName(metadata.title) + ".pdf";
 
-        const arxivId = idMatch[2]; // Changed from idMatch[1] to idMatch[2]
-        const pdfUrl = `https://arxiv.org/pdf/${arxivId}.pdf`;
+    // Setup PDF folder path
+    const pdfFolderPath = this.settings.pdfFolder?.trim()
+        ? this.settings.pdfFolder.trim().replace(/\/$/, "") + "/"
+        : "";
 
-        try {
-            const response = await requestUrl({
-                url: pdfUrl,
-                headers: {
-                    'User-Agent': 'Mozilla/5.0 (compatible; ObsidianPapersPlugin/1.0)'
-                }
-            });
+    // Check if PDF folder exists
+    if (pdfFolderPath && !(await this.app.vault.adapter.exists(pdfFolderPath.slice(0, -1)))) {
+        throw new Error(`PDF folder "${this.settings.pdfFolder}" doesn't exist. Please create it first.`);
+    }
 
-            if (!response.arrayBuffer) {
-                throw new Error("Failed to download PDF content");
+    const pdfPath = pdfFolderPath + pdfFilename;
+
+    // Check if PDF already exists
+    if (await this.app.vault.adapter.exists(pdfPath)) {
+        new Notice(`PDF already exists: ${pdfFilename}`);
+        return pdfFilename;
+    }
+
+    // Create a persistent notice for download progress
+    const progressNotice = new Notice("", 0); // 0 = infinite duration
+    
+    try {
+        await this.downloadPdfWithProgress(metadata.url, pdfPath, metadata.title, progressNotice);
+        setTimeout(() => progressNotice.hide(), 0);
+        
+        return pdfFilename;
+    } catch (error) {
+        // Error message
+        progressNotice.setMessage(`Failed to download PDF for "${metadata.title}"`);
+        
+        // Auto-hide error message after 5 seconds
+        setTimeout(() => progressNotice.hide(), 5000);
+        
+        throw new Error(`Failed to download PDF: ${error.message}`);
+    }
+}
+
+// Replace your downloadPdf method with this enhanced version:
+
+async downloadPdfWithProgress(
+    arxivUrl: string, 
+    savePath: string, 
+    title: string,
+    progressNotice: Notice
+) {
+    // Extract arXiv ID from URL (handle both abs and direct URLs)
+    const idMatch = arxivUrl.match(/arxiv\.org\/(abs|pdf)\/(\d{4}\.\d{4,5})(v\d+)?/);
+    if (!idMatch) throw new Error("Invalid arXiv URL");
+
+    const arxivId = idMatch[2];
+    const pdfUrl = `https://arxiv.org/pdf/${arxivId}.pdf`;
+
+    // Show initial progress
+    progressNotice.setMessage(`Downloading PDF for "${title}"...`);
+
+    try {
+        // Use Obsidian's requestUrl to bypass CORS
+        const response = await requestUrl({
+            url: pdfUrl,
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (compatible; ObsidianPapersPlugin/1.0)'
             }
+        });
 
-            const uint8Array = new Uint8Array(response.arrayBuffer);
-            await this.app.vault.adapter.writeBinary(savePath, uint8Array);
-        } catch (error) {
-            throw new Error(`Network error downloading PDF: ${error.message}`);
+        if (!response.arrayBuffer) {
+            throw new Error("Failed to download PDF content");
         }
+
+        const uint8Array = new Uint8Array(response.arrayBuffer);
+        await this.app.vault.adapter.writeBinary(savePath, uint8Array);
+        
+    } catch (error) {
+        throw new Error(`Network error downloading PDF: ${error.message}`);
     }
+}
+
     async fetchArxivMetadata(arxivId: string) {
         const response = await fetch(
             `https://export.arxiv.org/api/query?id_list=${arxivId}`
@@ -317,16 +352,27 @@ export default class PapersPlugin extends Plugin {
         authors: string[];
         year: number;
         url: string;
-    }) {
-        return `---
-title: "${metadata.title.replace(/:/g, " - ")}"
-authors:
-${metadata.authors.map((a) => `  - ${a}`).join("\n")}
-year: ${metadata.year}
-url: ${metadata.url}
-contribution: 
-tags: 
----`;
+    }, pdfFilename: string = ""): string {
+        let content = this.settings.noteTemplate;
+        
+        // Replace placeholders
+        content = content.replace(/\{\{TITLE\}\}/g, metadata.title.replace(/:/g, " - "));
+        content = content.replace(/\{\{URL\}\}/g, metadata.url);
+        content = content.replace(/\{\{YEAR\}\}/g, metadata.year.toString());
+        
+        // Handle authors - format as YAML array
+        const authorsYaml = metadata.authors.map(author => `  - ${author}`).join('\n');
+        content = content.replace(/\{\{AUTHORS\}\}/g, authorsYaml);
+        
+        // Handle PDF placeholder
+        if (pdfFilename) {
+            content = content.replace(/\{\{PDF\}\}/g, pdfFilename);
+        } else {
+            // Remove PDF placeholder if no PDF was downloaded
+            content = content.replace(/\{\{PDF\}\}/g, '');
+        }
+        
+        return content;
     }
 
     confirmOverwrite(): Promise<boolean> {
@@ -646,7 +692,7 @@ class PapersSettingTab extends PluginSettingTab {
 
         new Setting(containerEl)
             .setName("Notes folder")
-            .setDesc("Folder to save paper notes in")
+            .setDesc("Folder to save paper notes.")
             .addText((text) =>
                 text
                     .setPlaceholder("Example: Research/Papers")
@@ -658,20 +704,8 @@ class PapersSettingTab extends PluginSettingTab {
             );
 
         new Setting(containerEl)
-            .setName("Download PDF")
-            .setDesc("Download paper PDF files")
-            .addToggle((toggle) =>
-                toggle
-                    .setValue(this.plugin.settings.downloadPDF)
-                    .onChange(async (value) => {
-                        this.plugin.settings.downloadPDF = value;
-                        await this.plugin.saveSettings();
-                    })
-            );
-
-        new Setting(containerEl)
             .setName("PDF folder")
-            .setDesc("Folder to save downloaded PDFs")
+            .setDesc("Folder to save PDFs. These are only downloaded if notes contain the {{PDF}} placeholder.")
             .addText((text) =>
                 text
                     .setPlaceholder("Example: Research/PDF")
@@ -681,5 +715,32 @@ class PapersSettingTab extends PluginSettingTab {
                         await this.plugin.saveSettings();
                     })
             );
+
+        const templateSetting = new Setting(containerEl)
+            .setName("Note template")
+            .setDesc("Template for creating paper notes. Use {{TITLE}}, {{AUTHORS}}, {{YEAR}}, {{URL}}, and {{PDF}} to insert metadata.")
+            .addTextArea((text) => {
+                text
+                    .setPlaceholder(DEFAULT_SETTINGS.noteTemplate)
+                    .setValue(this.plugin.settings.noteTemplate || DEFAULT_SETTINGS.noteTemplate)
+                    .onChange(async (value) => {
+                        this.plugin.settings.noteTemplate = value || DEFAULT_SETTINGS.noteTemplate;
+                        await this.plugin.saveSettings();
+                    });
+                
+                // Make the textarea larger and full width
+                text.inputEl.rows = 10;
+                text.inputEl.style.width = "100%";
+                text.inputEl.style.minWidth = "100%";
+            });
+        
+        // Make the setting control take full width
+        templateSetting.settingEl.style.display = "block";
+        const controlEl = templateSetting.settingEl.querySelector('.setting-item-control');
+        if (controlEl) {
+            (controlEl as HTMLElement).style.width = "100%";
+            (controlEl as HTMLElement).style.maxWidth = "none";
+            (controlEl as HTMLElement).style.marginTop = "10px";
+        }
     }
 }
