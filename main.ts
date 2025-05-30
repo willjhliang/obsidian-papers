@@ -11,19 +11,19 @@ import {
 
 import stringSimilarity from "string-similarity";
 
-interface ArxivPluginSettings {
+interface Settings {
     notesFolder: string;
     downloadPDF: boolean;
     pdfFolder: string;
 }
 
-const DEFAULT_SETTINGS: ArxivPluginSettings = {
+const DEFAULT_SETTINGS: Settings = {
     notesFolder: "",
     downloadPDF: false,
     pdfFolder: "",
 };
 
-function sanitizeTitleForSearch(title: string): string {
+function sanitizeTitle(title: string): string {
     return title
         .toLowerCase()
         .replace(/[-:,.]/g, ' ')  // Replace punctuation with spaces
@@ -31,25 +31,50 @@ function sanitizeTitleForSearch(title: string): string {
         .trim();
 }
 
-export default class ArxivPlugin extends Plugin {
-    settings: ArxivPluginSettings;
+export default class PapersPlugin extends Plugin {
+    settings: Settings;
 
     async onload() {
         await this.loadSettings();
 
         this.addCommand({
-            id: "create-note-from-arxiv-clipboard",
-            name: "Create Note from arXiv Clipboard",
+            id: "import-from-clipboard",
+            name: "Import from Clipboard",
             callback: () => this.createNoteFromClipboard(),
         });
 
-        this.addSettingTab(new ArxivSettingTab(this.app, this));
+        this.addCommand({
+            id: "import-paper",
+            name: "Import Paper",
+            callback: () => this.showImportModal(),
+        });
+
+        this.addSettingTab(new PapersSettingTab(this.app, this));
+    }
+
+    showImportModal() {
+        const modal = new ImportModal(this.app, async (input: string) => {
+            if (!input?.trim()) {
+                new Notice("No input provided.");
+                return;
+            }
+            await this.processInput(input.trim());
+        });
+        modal.open();
     }
 
     async createNoteFromClipboard() {
         const clipboardText = await navigator.clipboard.readText();
+        if (!clipboardText?.trim()) {
+            new Notice("Clipboard is empty.");
+            return;
+        }
+        await this.processInput(clipboardText.trim());
+    }
 
-        const arxivIdMatch = clipboardText.match(
+    async processInput(input: string) {
+        // Check if input contains an arXiv URL
+        const arxivIdMatch = input.match(
             /arxiv\.org\/(abs|pdf|html)\/(\d{4}\.\d{4,5})(v\d+)?/
         );
         const arxivId = arxivIdMatch ? arxivIdMatch[2] : null;
@@ -57,27 +82,26 @@ export default class ArxivPlugin extends Plugin {
         if (arxivId) {
             const metadata = await this.fetchArxivMetadata(arxivId);
             if (!metadata) {
-                new Notice("Could not find metadata for the input.");
+                new Notice("Could not find metadata for the arXiv paper.");
                 return;
             }
             await this.createNoteFromMetadata(metadata);
             return;
         }
 
-        // Open modal with empty choices, but with "Loading..." placeholder
+        // Otherwise, search by title
         const modal = new TitleSelectModal(this.app, [], async (choice) => {
             if (!choice || !choice.title || choice.title.startsWith("Search for")) {
                 new Notice("Cancelled or no selection.");
                 return;
             }
             await this.createNoteFromMetadata(choice);
-        }, clipboardText);
+        }, input);
 
-        modal.setLoading(true); // NEW: tell modal it’s loading
+        modal.setLoading(true);
         modal.open();
 
-        // Fetch search results
-        const results = await this.searchArxivByTitle(clipboardText);
+        const results = await this.searchArxivByTitle(input);
 
         if (!results || results.length === 0) {
             modal.updateChoices([
@@ -86,7 +110,7 @@ export default class ArxivPlugin extends Plugin {
         } else {
             modal.updateChoices(results);
         }
-        modal.setLoading(false); // NEW: loading done
+        modal.setLoading(false);
     }
 
     async createNoteFromMetadata(metadata: {
@@ -127,7 +151,6 @@ export default class ArxivPlugin extends Plugin {
             new Notice("Error creating note: " + err);
         }
     }
-
 
     async downloadPdf(arxivUrl: string, savePath: string) {
         const idMatch = arxivUrl.match(/\/(\d{4}\.\d{4,5})(v\d+)?$/);
@@ -178,8 +201,7 @@ export default class ArxivPlugin extends Plugin {
     }
 
     async searchArxivByTitle(title: string) {
-        // Use title-only search with quotes for exact phrase matching
-        const sanitized = sanitizeTitleForSearch(title);
+        const sanitized = sanitizeTitle(title);
         const query = encodeURIComponent(sanitized);
 
         const response = await fetch(
@@ -248,6 +270,80 @@ tags:
     }
 }
 
+class ImportModal extends Modal {
+    onSubmit: (input: string) => void;
+    inputEl: HTMLInputElement;
+
+    constructor(app: App, onSubmit: (input: string) => void) {
+        super(app);
+        this.onSubmit = onSubmit;
+    }
+
+    onOpen() {
+        const { contentEl, titleEl } = this;
+
+        titleEl.setText("Import Paper");
+
+        contentEl.empty();
+
+        contentEl.createEl("p", {
+            text: "Enter a paper title to search arXiv, or paste an arXiv URL for direct import."
+        });
+
+        this.inputEl = contentEl.createEl("input", {
+            type: "text",
+            placeholder: "Enter paper title or arXiv URL..."
+        });
+
+        // Make input span full width
+        this.inputEl.style.width = "100%";
+        this.inputEl.style.boxSizing = "border-box";
+
+        // Focus the input
+        setTimeout(() => this.inputEl.focus(), 10);
+
+        // Handle enter key with proper event handling
+        this.inputEl.addEventListener("keydown", (e) => {
+            if (e.key === "Enter") {
+                e.preventDefault();
+                e.stopPropagation();
+                this.submit();
+            } else if (e.key === "Escape") {
+                e.preventDefault();
+                e.stopPropagation();
+                this.close();
+            }
+        });
+
+        const buttonContainer = contentEl.createDiv({
+            cls: "modal-button-container",
+        });
+
+        const importButton = buttonContainer.createEl("button", {
+            text: "Import",
+            cls: "mod-cta",
+        });
+        importButton.onclick = () => this.submit();
+
+        const cancelButton = buttonContainer.createEl("button", {
+            text: "Cancel",
+        });
+        cancelButton.onclick = () => this.close();
+    }
+
+    submit() {
+        const value = this.inputEl.value.trim();
+        if (value) {
+            this.close();
+            this.onSubmit(value);
+        }
+    }
+
+    onClose() {
+        this.contentEl.empty();
+    }
+}
+
 class TitleSelectModal extends SuggestModal<any> {
     choices: any[];
     onChoice: (choice: any | null) => void;
@@ -259,6 +355,7 @@ class TitleSelectModal extends SuggestModal<any> {
         this.choices = choices;
         this.onChoice = onChoice;
         this.searchQuery = searchQuery;
+        this.emptyStateText = "No results found";
     }
 
     onOpen() {
@@ -269,38 +366,49 @@ class TitleSelectModal extends SuggestModal<any> {
     setLoading(isLoading: boolean, queryText?: string) {
         this.loading = isLoading;
         if (this.inputEl) {
-            if (isLoading && queryText) {
-                this.inputEl.placeholder = `Searching for "${queryText.trim()}"...`;
-            } else {
-                this.inputEl.placeholder = "Select...";
-            }
+            this.inputEl.placeholder = "Select a paper...";
+            this.inputEl.disabled = isLoading;
         }
+        
+        if (isLoading && queryText) {
+            this.emptyStateText = `Searching for "${queryText.trim()}"...`;
+        } else {
+            this.emptyStateText = "No results found";
+        }
+        
+        // Trigger a re-render
+        this.onInput();
     }
 
     updateChoices(newChoices: any[]) {
         this.choices = newChoices;
-        this.setLoading(false); // stop showing loading once results are in
-        this.onInput(); // refresh suggestions UI
+        this.setLoading(false);
+        this.onInput();
     }
 
     getSuggestions(query: string) {
-        const normalizedQuery = sanitizeTitleForSearch(this.searchQuery);
+        // If loading, return empty array to show loading message via emptyStateText
+        if (this.loading) {
+            return [];
+        }
+
+        const normalizedQuery = sanitizeTitle(this.searchQuery);
 
         return this.choices
             .filter(choice => {
                 const sim = stringSimilarity.compareTwoStrings(
-                    sanitizeTitleForSearch(choice.title),
+                    sanitizeTitle(choice.title),
                     normalizedQuery
                 );
                 return sim > 0.5;
             })
             .sort((a, b) => {
                 const simA = stringSimilarity.compareTwoStrings(
-                    sanitizeTitleForSearch(a.title),
+                    sanitizeTitle(a.title),
                     normalizedQuery
                 );
                 const simB = stringSimilarity.compareTwoStrings(
-                    sanitizeTitleForSearch(b.title),
+                    sanitizeTitle(b.title),
                     normalizedQuery
                 );
                 return simB - simA;
@@ -337,7 +445,7 @@ class ConfirmOverwriteModal extends Modal {
 
         contentEl.empty();
         contentEl.createEl("p", {
-            text: "A note with this title already exists. Do you want to overwrite it?",
+            text: "A note with this title already exists. Do you want to overwrite?",
         });
 
         const buttonContainer = contentEl.createDiv({
@@ -371,10 +479,10 @@ class ConfirmOverwriteModal extends Modal {
     }
 }
 
-class ArxivSettingTab extends PluginSettingTab {
-    plugin: ArxivPlugin;
+class PapersSettingTab extends PluginSettingTab {
+    plugin: PapersPlugin;
 
-    constructor(app: App, plugin: ArxivPlugin) {
+    constructor(app: App, plugin: PapersPlugin) {
         super(app, plugin);
         this.plugin = plugin;
     }
@@ -383,14 +491,12 @@ class ArxivSettingTab extends PluginSettingTab {
         const { containerEl } = this;
         containerEl.empty();
 
-        containerEl.createEl("h2", { text: "arXiv Note Plugin Settings" });
-
         new Setting(containerEl)
             .setName("Notes folder")
-            .setDesc("Folder to save arXiv notes in")
+            .setDesc("Folder to save paper notes in")
             .addText((text) =>
                 text
-                    .setPlaceholder("Example: Literature/arXiv")
+                    .setPlaceholder("Example: Research/Papers")
                     .setValue(this.plugin.settings.notesFolder)
                     .onChange(async (value) => {
                         this.plugin.settings.notesFolder = value;
@@ -399,8 +505,8 @@ class ArxivSettingTab extends PluginSettingTab {
             );
 
         new Setting(containerEl)
-            .setName("Download PDFs")
-            .setDesc("Download PDF files for arXiv papers")
+            .setName("Download PDF")
+            .setDesc("Download paper PDF files")
             .addToggle((toggle) =>
                 toggle
                     .setValue(this.plugin.settings.downloadPDF)
@@ -412,10 +518,10 @@ class ArxivSettingTab extends PluginSettingTab {
 
         new Setting(containerEl)
             .setName("PDF folder")
-            .setDesc("Folder to save downloaded PDFs (relative to vault root)")
+            .setDesc("Folder to save downloaded PDFs")
             .addText((text) =>
                 text
-                    .setPlaceholder("Example: Literature/arXiv/pdfs")
+                    .setPlaceholder("Example: Research/PDF")
                     .setValue(this.plugin.settings.pdfFolder)
                     .onChange(async (value) => {
                         this.plugin.settings.pdfFolder = value;
