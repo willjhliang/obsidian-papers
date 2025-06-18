@@ -201,10 +201,7 @@ export default class PapersPlugin extends Plugin {
             const pdfUrl = `https://arxiv.org/pdf/${arxivId}.pdf`;
             progressNotice.setMessage(`Downloading PDF for "${metadata.title}"...`);
 
-            const response = await requestUrl({
-                url: pdfUrl,
-                headers: { 'User-Agent': 'Mozilla/5.0 (compatible; ObsidianPapersPlugin/1.0)' }
-            });
+            const response = await requestUrl(pdfUrl)
 
             if (!response.arrayBuffer) {
                 throw new Error("Failed to download PDF content");
@@ -223,45 +220,33 @@ export default class PapersPlugin extends Plugin {
     }
 
     async fetchArxivMetadata(arxivId: string): Promise<PaperMetadata | null> {
-        const response = await fetch(`https://export.arxiv.org/api/query?id_list=${arxivId}`);
-        const text = await response.text();
+        try {
+            const response = await requestUrl(`https://export.arxiv.org/api/query?id_list=${arxivId}`);
+            
+            const text = response.text;
+            const parser = new DOMParser();
+            const xml = parser.parseFromString(text, "application/xml");
+            const entry = xml.querySelector("entry");
+            if (!entry) return null;
 
-        const parser = new DOMParser();
-        const xml = parser.parseFromString(text, "application/xml");
-        const entry = xml.querySelector("entry");
-        if (!entry) return null;
-
-        const title = entry.querySelector("title")?.textContent?.trim().replace(/\s+/g, " ") || "";
-        const authors = Array.from(entry.querySelectorAll("author > name")).map(e => e.textContent || "");
-        const published = entry.querySelector("published")?.textContent || "";
-        const year = new Date(published).getFullYear();
-
-        return { title, authors, year, url: `https://arxiv.org/abs/${arxivId}` };
-    }
-
-    async searchArxivByTitle(title: string): Promise<PaperMetadata[]> {
-        const sanitized = sanitizeTitle(title);
-        const query = encodeURIComponent(sanitized);
-        const response = await fetch(`https://export.arxiv.org/api/query?search_query=ti:${query}&start=0&max_results=10`);
-        const text = await response.text();
-
-        const parser = new DOMParser();
-        const xml = parser.parseFromString(text, "application/xml");
-        const entries = Array.from(xml.querySelectorAll("entry"));
-
-        return entries.map(entry => {
             const title = entry.querySelector("title")?.textContent?.trim().replace(/\s+/g, " ") || "";
             const authors = Array.from(entry.querySelectorAll("author > name")).map(e => e.textContent || "");
             const published = entry.querySelector("published")?.textContent || "";
             const year = new Date(published).getFullYear();
-            const id = entry.querySelector("id")?.textContent?.match(/\d{4}\.\d{4,5}/)?.[0] || "";
 
-            return { title, authors, year, url: `https://arxiv.org/abs/${id}` };
-        });
+            return { title, authors, year, url: `https://arxiv.org/abs/${arxivId}` };
+        } catch (error) {
+            console.error("Failed to fetch arXiv metadata:", error);
+            return null;
+        }
     }
 
     sanitizeFileName(title: string): string {
-        return title.replace(/:/g, " - ").replace(/[\\/:*?"<>|]/g, "");
+        return title
+            .replace(/:/g, " - ")
+            .replace(/[\\/:*?"<>|]/g, "")
+            .replace(/\s{2,}/g, " ") // Collapse 2+ spaces into 1
+            .trim();
     }
 
     formatNoteContent(metadata: PaperMetadata, pdfFilename = ""): string {
@@ -269,7 +254,7 @@ export default class PapersPlugin extends Plugin {
         const authorsYaml = metadata.authors.map(author => `  - ${author}`).join('\n');
 
         return content
-            .replace(/\{\{TITLE\}\}/g, metadata.title.replace(/:/g, " - "))
+            .replace(/\{\{TITLE\}\}/g, this.sanitizeFileName(metadata.title))
             .replace(/\{\{URL\}\}/g, metadata.url)
             .replace(/\{\{YEAR\}\}/g, metadata.year.toString())
             .replace(/\{\{AUTHORS\}\}/g, authorsYaml)
@@ -420,14 +405,16 @@ class ImportSelectModal extends SuggestModal<PaperMetadata> {
 
     async searchArxivByTitle(title: string, maxRetries = 3): Promise<PaperMetadata[]> {
         const sanitized = sanitizeTitle(title);
-        const query = encodeURIComponent(sanitized);
-        const url = `https://export.arxiv.org/api/query?search_query=ti:${query}&start=0&max_results=10`;
+        // Fix: Handle spaces properly for arXiv API
+        const query = sanitized.split(' ').map(word => encodeURIComponent(word)).join('+');
+        const url = `https://export.arxiv.org/api/query?search_query=ti:"${query}"&start=0&max_results=10`;
 
         for (let attempt = 1; attempt <= maxRetries; attempt++) {
             try {
-                const response = await fetch(url);
-                const text = await response.text();
-
+                console.log("ArXiv search URL:", url);
+                const response = await requestUrl(url);
+                
+                const text = response.text;
                 const parser = new DOMParser();
                 const xml = parser.parseFromString(text, "application/xml");
                 const entries = Array.from(xml.querySelectorAll("entry"));
@@ -448,7 +435,7 @@ class ImportSelectModal extends SuggestModal<PaperMetadata> {
                 const errorMessage = (error as Error).message;
                 const isNetworkError = errorMessage.includes('ERR_CONNECTION_RESET') ||
                     errorMessage.includes('ERR_NETWORK') ||
-                    errorMessage.includes('fetch');
+                    errorMessage.includes('request');
 
                 if (!isNetworkError || attempt === maxRetries) {
                     throw error;
