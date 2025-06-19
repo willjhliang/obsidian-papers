@@ -86,13 +86,24 @@ export default class PapersPlugin extends Plugin {
             return;
         }
 
-        const metadata = await this.fetchArxivMetadata(arxivId);
-        if (!metadata) {
-            new Notice("Could not find metadata for the arXiv paper.");
-            return;
-        }
+        // Show loading notice for metadata fetch
+        const metadataNotice = new Notice("Fetching paper metadata from arXiv...", 0);
+        
+        try {
+            const metadata = await this.fetchArxivMetadata(arxivId);
+            metadataNotice.hide();
+            
+            if (!metadata) {
+                new Notice("Could not find metadata for the arXiv paper.");
+                return;
+            }
 
-        await this.createNoteFromMetadata(metadata);
+            await this.createNoteFromMetadata(metadata);
+        } catch (error) {
+            metadataNotice.hide();
+            new Notice("Failed to fetch paper metadata.");
+            console.error("Metadata fetch error:", error);
+        }
     }
 
     async createNoteFromClipboard() {
