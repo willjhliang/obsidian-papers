@@ -60,7 +60,7 @@ export default class PapersPlugin extends Plugin {
 
         this.addCommand({
             id: "import-from-clipboard",
-            name: "Import from Clipboard",
+            name: "Import from clipboard",
             callback: () => this.createNoteFromClipboard(),
         });
 
@@ -422,7 +422,6 @@ class ImportSelectModal extends SuggestModal<PaperMetadata> {
 
         for (let attempt = 1; attempt <= maxRetries; attempt++) {
             try {
-                console.log("ArXiv search URL:", url);
                 const response = await requestUrl(url);
                 
                 const text = response.text;
@@ -478,7 +477,7 @@ class ConfirmOverwriteModal extends Modal {
     onOpen() {
         const { contentEl, titleEl } = this;
 
-        titleEl.setText("File Exists");
+        titleEl.setText("File exists");
         contentEl.empty();
         contentEl.createEl("p", { text: "A note with this title already exists. Do you want to overwrite?" });
 
