@@ -1,7 +1,7 @@
 {
 	"id": "papers",
 	"name": "Papers",
-	"version": "1.0.0",
+	"version": "1.0.1",
 	"minAppVersion": "0.15.0",
 	"description": "Retrieve and import research papers.",
 	"author": "William Liang",

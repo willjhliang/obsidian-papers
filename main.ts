@@ -303,9 +303,10 @@ class ImportSelectModal extends SuggestModal<PaperMetadata> {
     onOpen() {
         super.onOpen();
 
-        if (this.resultContainerEl) {
-            this.resultContainerEl.style.display = 'none';
-        }
+        // if (this.resultContainerEl) {
+        //     this.resultContainerEl.style.display = 'none';
+        // }
+        if (this.resultContainerEl) this.resultContainerEl.hide();
 
         setTimeout(() => {
             if (this.inputEl) {
@@ -395,7 +396,8 @@ class ImportSelectModal extends SuggestModal<PaperMetadata> {
         if (isLoading) {
             this.emptyStateText = "Searching arXiv...";
             this.hasSearched = true;
-            if (this.resultContainerEl) this.resultContainerEl.style.display = '';
+            // if (this.resultContainerEl) this.resultContainerEl.style.display = '';
+            if (this.resultContainerEl) this.resultContainerEl.show();
         }
 
         this.manualRefresh();
@@ -406,7 +408,8 @@ class ImportSelectModal extends SuggestModal<PaperMetadata> {
         this.hasSearched = true;
         this.choices = results;
 
-        if (this.resultContainerEl) this.resultContainerEl.style.display = '';
+        // if (this.resultContainerEl) this.resultContainerEl.style.display = '';
+        if (this.resultContainerEl) this.resultContainerEl.show();
 
         this.emptyStateText = results.length === 0 ? "No results found" : "No matching results";
 
@@ -556,18 +559,20 @@ class PapersSettingTab extends PluginSettingTab {
                         this.plugin.settings.noteTemplate = value || DEFAULT_SETTINGS.noteTemplate;
                         await this.plugin.saveSettings();
                     });
-
                 text.inputEl.rows = 10;
-                text.inputEl.style.width = "100%";
-                text.inputEl.style.minWidth = "100%";
+                Object.assign(text.inputEl.style, {
+                    width: "100%",
+                    minWidth: "100%"
+                });
             });
 
-        templateSetting.settingEl.style.display = "block";
+        Object.assign(templateSetting.settingEl.style, {
+            display: "block"
+        });
+
         const controlEl = templateSetting.settingEl.querySelector('.setting-item-control') as HTMLElement;
         if (controlEl) {
             Object.assign(controlEl.style, {
-                width: "100%",
-                maxWidth: "none",
                 marginTop: "10px"
             });
         }
