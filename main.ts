@@ -26,7 +26,9 @@ title: "{{TITLE}}"
 authors:
 {{AUTHORS}}
 year: {{YEAR}}
+pdf: "[[{{PDF}}]]"
 url: {{URL}}
+tags:
 ---
 ![[{{PDF}}]]`,
 };
@@ -331,17 +333,15 @@ class ImportSelectModal extends SuggestModal<PaperMetadata> {
         }
 
         const sanitized = sanitizeTitle(query);
-        return this.choices
-            .filter(choice => {
-                const sim = compareTwoStrings(sanitizeTitle(choice.title), sanitized);
-                return sim > 0.3;
-            })
-            .sort((a, b) => {
-                const simA = compareTwoStrings(sanitizeTitle(a.title), sanitized);
-                const simB = compareTwoStrings(sanitizeTitle(b.title), sanitized);
-                return simB - simA;
-            });
-    }
+		return this.choices
+			  .map(choice => ({
+				choice,
+				sim: compareTwoStrings(sanitizeTitle(choice.title), sanitized),
+			  }))
+			  .sort((a, b) => b.sim - a.sim)
+			  .slice(0, 10)
+			  .map(x => x.choice);
+	}
 
     renderSuggestion(choice: PaperMetadata, el: HTMLElement) {
         el.createEl("div", { text: choice.title });
