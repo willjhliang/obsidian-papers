@@ -1,4 +1,5 @@
 import {
+    AbstractInputSuggest,
     App,
     Modal,
     Notice,
@@ -7,6 +8,7 @@ import {
     Setting,
     SuggestModal,
     TFile,
+    TFolder,
     requestUrl,
 } from "obsidian";
 
@@ -38,6 +40,8 @@ interface PaperMetadata {
     url: string;
 }
 
+type ImportChoice = PaperMetadata | { isArxivUrl: true; input: string };
+
 const sanitizeTitle = (title: string): string =>
     title.toLowerCase().replace(/[-:,.]/g, ' ').replace(/\s+/g, ' ').trim();
 
@@ -68,14 +72,13 @@ export default class PapersPlugin extends Plugin {
     }
 
     showImportModal() {
-        new ImportSelectModal(this.app, async (choice) => {
+        new ImportSelectModal(this.app, (choice) => {
             if (!choice) return;
 
-            if (choice.isArxivUrl) {
-                await this.processArxivUrl(choice.input);
-            } else {
-                await this.createNoteFromMetadata(choice);
-            }
+            const task = ('isArxivUrl' in choice)
+                ? this.processArxivUrl(choice.input)
+                : this.createNoteFromMetadata(choice);
+            void task;
         }).open();
     }
 
@@ -118,25 +121,24 @@ export default class PapersPlugin extends Plugin {
             return;
         }
 
-        const modal = new ImportSelectModal(this.app, async (choice) => {
+        const modal = new ImportSelectModal(this.app, (choice) => {
             if (!choice) return;
 
-            if (choice.isArxivUrl) {
-                await this.processArxivUrl(choice.input);
-            } else {
-                await this.createNoteFromMetadata(choice);
-            }
+            const task = ('isArxivUrl' in choice)
+                ? this.processArxivUrl(choice.input)
+                : this.createNoteFromMetadata(choice);
+            void task;
         });
 
         // Pre-fill and auto-search for clipboard content
         modal.currentInput = clipboardText.trim();
         modal.onOpen = function () {
             SuggestModal.prototype.onOpen.call(this);
-            setTimeout(() => {
+            activeWindow.setTimeout(() => {
                 if (this.inputEl) {
                     this.inputEl.value = clipboardText.trim();
                     this.inputEl.focus();
-                    this.performSearch();
+                    void this.performSearch();
                 }
             }, 10);
         };
@@ -168,7 +170,7 @@ export default class PapersPlugin extends Plugin {
 
         try {
             if (fileExists) {
-                const file = await this.app.vault.getAbstractFileByPath(filePath);
+                const file = this.app.vault.getAbstractFileByPath(filePath);
                 if (file instanceof TFile) {
                     await this.app.vault.modify(file, content);
                 }
@@ -178,7 +180,7 @@ export default class PapersPlugin extends Plugin {
 
             new Notice("Created paper note: " + filename);
 
-            const file = await this.app.vault.getAbstractFileByPath(filePath);
+            const file = this.app.vault.getAbstractFileByPath(filePath);
             if (file instanceof TFile) {
                 await this.app.workspace.getLeaf(true).openFile(file);
             }
@@ -197,7 +199,7 @@ export default class PapersPlugin extends Plugin {
             : "";
 
         if (pdfFolderPath && !(await this.app.vault.adapter.exists(pdfFolderPath.slice(0, -1)))) {
-            throw new Error(`PDF folder "${this.settings.pdfFolder}" doesn't exist. Please create it first.`);
+            throw new Error(`PDF location "${this.settings.pdfFolder}" doesn't exist. Please create it first.`);
         }
 
         const pdfPath = pdfFolderPath + pdfFilename;
@@ -225,7 +227,7 @@ export default class PapersPlugin extends Plugin {
             return pdfFilename;
         } catch (error) {
             progressNotice.setMessage(`Failed to download PDF for "${metadata.title}"`);
-            setTimeout(() => progressNotice.hide(), 5000);
+            activeWindow.setTimeout(() => progressNotice.hide(), 5000);
             throw new Error(`Failed to download PDF: ${error.message}`);
         }
     }
@@ -261,7 +263,7 @@ export default class PapersPlugin extends Plugin {
     }
 
     formatNoteContent(metadata: PaperMetadata, pdfFilename = ""): string {
-        let content = this.settings.noteTemplate;
+        const content = this.settings.noteTemplate;
         const authorsYaml = metadata.authors.map(author => `  - ${author}`).join('\n');
 
         return content
@@ -289,12 +291,12 @@ export default class PapersPlugin extends Plugin {
 
 class ImportSelectModal extends SuggestModal<PaperMetadata> {
     choices: PaperMetadata[] = [];
-    onChoice: (choice: any | null) => void;
+    onChoice: (choice: ImportChoice | null) => void;
     loading = false;
     hasSearched = false;
     currentInput = "";
 
-    constructor(app: App, onChoice: (choice: any | null) => void) {
+    constructor(app: App, onChoice: (choice: ImportChoice | null) => void) {
         super(app);
         this.onChoice = onChoice;
         this.setPlaceholder("Search paper title or arXiv URL...");
@@ -308,7 +310,7 @@ class ImportSelectModal extends SuggestModal<PaperMetadata> {
         // }
         if (this.resultContainerEl) this.resultContainerEl.hide();
 
-        setTimeout(() => {
+        activeWindow.setTimeout(() => {
             if (this.inputEl) {
                 this.inputEl.focus();
                 this.inputEl.addEventListener('keyup', (e) => {
@@ -316,7 +318,7 @@ class ImportSelectModal extends SuggestModal<PaperMetadata> {
                         e.preventDefault();
                         e.stopPropagation();
                         e.stopImmediatePropagation();
-                        this.performSearch();
+                        void this.performSearch();
                     }
                 });
             }
@@ -344,7 +346,7 @@ class ImportSelectModal extends SuggestModal<PaperMetadata> {
     }
 
     renderSuggestion(choice: PaperMetadata, el: HTMLElement) {
-        el.createEl("div", { text: choice.title });
+        el.createDiv({ text: choice.title });
         if (choice.authors?.length) {
             el.createEl("small", { text: choice.authors.join(", ") });
         }
@@ -355,7 +357,7 @@ class ImportSelectModal extends SuggestModal<PaperMetadata> {
     }
 
     manualRefresh() {
-        setTimeout(() => {
+        activeWindow.setTimeout(() => {
             if (this.inputEl) {
                 this.inputEl.dispatchEvent(new Event('input', { bubbles: true }));
             }
@@ -455,7 +457,7 @@ class ImportSelectModal extends SuggestModal<PaperMetadata> {
                 }
 
                 const delay = Math.pow(2, attempt - 1) * 1000;
-                await new Promise(resolve => setTimeout(resolve, delay));
+                await new Promise(resolve => activeWindow.setTimeout(resolve, delay));
 
                 this.emptyStateText = `Searching arXiv... (retry ${attempt + 1}/${maxRetries})`;
                 this.manualRefresh();
@@ -510,6 +512,38 @@ class ConfirmOverwriteModal extends Modal {
     }
 }
 
+class FolderSuggest extends AbstractInputSuggest<TFolder> {
+    constructor(
+        app: App,
+        private inputEl: HTMLInputElement,
+        private onSelectFolder: (value: string) => void
+    ) {
+        super(app, inputEl);
+    }
+
+    getSuggestions(query: string): TFolder[] {
+        const lowerQuery = query.toLowerCase();
+        return this.app.vault
+            .getAllLoadedFiles()
+            .filter(
+                (file): file is TFolder =>
+                    file instanceof TFolder &&
+                    file.path.toLowerCase().contains(lowerQuery)
+            );
+    }
+
+    renderSuggestion(folder: TFolder, el: HTMLElement): void {
+        el.setText(folder.path);
+    }
+
+    selectSuggestion(folder: TFolder): void {
+        this.inputEl.value = folder.path;
+        this.inputEl.trigger("input");
+        this.onSelectFolder(folder.path);
+        this.close();
+    }
+}
+
 class PapersSettingTab extends PluginSettingTab {
     plugin: PapersPlugin;
 
@@ -523,30 +557,38 @@ class PapersSettingTab extends PluginSettingTab {
         containerEl.empty();
 
         new Setting(containerEl)
-            .setName("Notes folder")
+            .setName("Notes location")
             .setDesc("Folder to save paper notes.")
-            .addText(text =>
+            .addText(text => {
+                new FolderSuggest(this.app, text.inputEl, value => {
+                    this.plugin.settings.notesFolder = value;
+                    void this.plugin.saveSettings();
+                });
                 text
                     .setPlaceholder("Example: Research/Papers")
                     .setValue(this.plugin.settings.notesFolder)
                     .onChange(async value => {
                         this.plugin.settings.notesFolder = value;
                         await this.plugin.saveSettings();
-                    })
-            );
+                    });
+            });
 
         new Setting(containerEl)
-            .setName("PDF folder")
+            .setName("PDF location")
             .setDesc("Folder to save PDFs. These are only downloaded if notes contain the {{PDF}} placeholder.")
-            .addText(text =>
+            .addText(text => {
+                new FolderSuggest(this.app, text.inputEl, value => {
+                    this.plugin.settings.pdfFolder = value;
+                    void this.plugin.saveSettings();
+                });
                 text
                     .setPlaceholder("Example: Research/PDF")
                     .setValue(this.plugin.settings.pdfFolder)
                     .onChange(async value => {
                         this.plugin.settings.pdfFolder = value;
                         await this.plugin.saveSettings();
-                    })
-            );
+                    });
+            });
 
         const templateSetting = new Setting(containerEl)
             .setName("Note template")
