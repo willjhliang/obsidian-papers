@@ -18,22 +18,23 @@ import compareTwoStrings from 'string-similarity-js';
 interface Settings {
     notesFolder: string;
     pdfFolder: string;
-    noteTemplate: string;
+    templateFile: string;
     useQueryAsAlias: boolean;
 }
+
+const DEFAULT_TEMPLATE = `---
+title: "{{title}}"
+authors: {{authors}}
+year: {{year}}
+url: {{url}}
+---
+![[{{pdf}}]]`;
 
 const DEFAULT_SETTINGS: Settings = {
     notesFolder: "",
     pdfFolder: "",
     useQueryAsAlias: false,
-    noteTemplate: `---
-title: "{{TITLE}}"
-authors:
-{{AUTHORS}}
-year: {{YEAR}}
-url: {{URL}}
----
-![[{{PDF}}]]`,
+    templateFile: "",
 };
 
 interface PaperMetadata {
@@ -212,6 +213,18 @@ export default class PapersPlugin extends Plugin {
         modal.open();
     }
 
+    async getTemplate(): Promise<string> {
+        const path = this.settings.templateFile.trim();
+        if (path) {
+            const file = this.app.vault.getAbstractFileByPath(path);
+            if (file instanceof TFile) {
+                return await this.app.vault.cachedRead(file);
+            }
+            new Notice(`Template file "${path}" not found. Using default template.`);
+        }
+        return DEFAULT_TEMPLATE;
+    }
+
     async createNoteFromMetadata(metadata: PaperMetadata) {
         const filename = this.sanitizeFileName(metadata.title) + ".md";
         const folderPath = this.settings.notesFolder?.trim()
@@ -222,8 +235,10 @@ export default class PapersPlugin extends Plugin {
         const fileExists = await this.app.vault.adapter.exists(filePath);
         if (fileExists && !(await this.confirmOverwrite())) return;
 
+        const template = await this.getTemplate();
+
         let pdfFilename = "";
-        if (this.settings.noteTemplate.includes("{{PDF}}") && metadata.url.includes('arxiv.org')) {
+        if (template.includes("{{pdf}}") && metadata.url.includes('arxiv.org')) {
             try {
                 pdfFilename = await this.downloadPdf(metadata);
             } catch (error) {
@@ -232,7 +247,7 @@ export default class PapersPlugin extends Plugin {
             }
         }
 
-        const content = this.formatNoteContent(metadata, pdfFilename);
+        const content = this.formatNoteContent(template, metadata, pdfFilename);
 
         try {
             if (fileExists) {
@@ -328,16 +343,29 @@ export default class PapersPlugin extends Plugin {
             .trim();
     }
 
-    formatNoteContent(metadata: PaperMetadata, pdfFilename = ""): string {
-        const content = this.settings.noteTemplate;
-        const authorsYaml = metadata.authors.map(author => `  - ${author}`).join('\n');
+    formatNoteContent(template: string, metadata: PaperMetadata, pdfFilename = ""): string {
+        return template
+            .replace(/\{\{title\}\}/g, this.sanitizeFileName(metadata.title))
+            .replace(/\{\{url\}\}/g, metadata.url)
+            .replace(/\{\{year\}\}/g, metadata.year.toString())
+            .replace(/^([^\n]*)\{\{authors\}\}/gm, (_match, prefix) =>
+                this.renderAuthors(prefix, metadata.authors))
+            .replace(/\{\{pdf\}\}/g, pdfFilename);
+    }
 
-        return content
-            .replace(/\{\{TITLE\}\}/g, this.sanitizeFileName(metadata.title))
-            .replace(/\{\{URL\}\}/g, metadata.url)
-            .replace(/\{\{YEAR\}\}/g, metadata.year.toString())
-            .replace(/\{\{AUTHORS\}\}/g, authorsYaml)
-            .replace(/\{\{PDF\}\}/g, pdfFilename);
+    // Expand {{authors}} into a YAML block list. When the placeholder follows a
+    // key inline (e.g. "authors: {{authors}}"), the list starts on the next line
+    // indented two spaces; when it sits alone on its line, items inherit that
+    // line's leading indentation.
+    renderAuthors(prefix: string, authors: string[]): string {
+        if (prefix.trim() === "") {
+            if (!authors.length) return prefix + "[]";
+            return prefix + authors.map(a => `- ${a}`).join(`\n${prefix}`);
+        }
+
+        const key = prefix.replace(/[ \t]+$/, "");
+        if (!authors.length) return `${key} []`;
+        return key + authors.map(a => `\n  - ${a}`).join("");
     }
 
     confirmOverwrite(): Promise<boolean> {
@@ -739,6 +767,34 @@ class FolderSuggest extends AbstractInputSuggest<TFolder> {
     }
 }
 
+class FileSuggest extends AbstractInputSuggest<TFile> {
+    constructor(
+        app: App,
+        private inputEl: HTMLInputElement,
+        private onSelectFile: (value: string) => void
+    ) {
+        super(app, inputEl);
+    }
+
+    getSuggestions(query: string): TFile[] {
+        const lowerQuery = query.toLowerCase();
+        return this.app.vault
+            .getMarkdownFiles()
+            .filter(file => file.path.toLowerCase().contains(lowerQuery));
+    }
+
+    renderSuggestion(file: TFile, el: HTMLElement): void {
+        el.setText(file.path);
+    }
+
+    selectSuggestion(file: TFile): void {
+        this.inputEl.value = file.path;
+        this.inputEl.trigger("input");
+        this.onSelectFile(file.path);
+        this.close();
+    }
+}
+
 class PapersSettingTab extends PluginSettingTab {
     plugin: PapersPlugin;
 
@@ -772,7 +828,7 @@ class PapersSettingTab extends PluginSettingTab {
 
         new Setting(containerEl)
             .setName("PDF location")
-            .setDesc("Folder to save PDFs. These are only downloaded if notes contain the {{PDF}} placeholder.")
+            .setDesc("Folder to save PDFs. These are only downloaded if notes contain the {{pdf}} placeholder.")
             .addText(text => {
                 new FolderSuggest(this.app, text.inputEl, value => {
                     this.plugin.settings.pdfFolder = value;
@@ -787,34 +843,26 @@ class PapersSettingTab extends PluginSettingTab {
                     });
             });
 
-        const templateSetting = new Setting(containerEl)
+        new Setting(containerEl)
             .setName("Note template")
-            .setDesc("Template for creating paper notes. Use {{TITLE}}, {{AUTHORS}}, {{YEAR}}, {{URL}}, and {{PDF}} to insert metadata.")
-            .addTextArea(text => {
+            .setDesc(createFragment(frag => {
+                frag.appendText("Template for imported paper notes.");
+                frag.createEl("br");
+                frag.appendText("Use {{title}}, {{authors}}, {{year}}, {{url}}, {{pdf}} to insert metadata.");
+            }))
+            .addText(text => {
+                new FileSuggest(this.app, text.inputEl, value => {
+                    this.plugin.settings.templateFile = value;
+                    void this.plugin.saveSettings();
+                });
                 text
-                    .setPlaceholder(DEFAULT_SETTINGS.noteTemplate)
-                    .setValue(this.plugin.settings.noteTemplate || DEFAULT_SETTINGS.noteTemplate)
+                    .setPlaceholder("Example: Research/Paper Template.md")
+                    .setValue(this.plugin.settings.templateFile)
                     .onChange(async value => {
-                        this.plugin.settings.noteTemplate = value || DEFAULT_SETTINGS.noteTemplate;
+                        this.plugin.settings.templateFile = value;
                         await this.plugin.saveSettings();
                     });
-                text.inputEl.rows = 10;
-                Object.assign(text.inputEl.style, {
-                    width: "100%",
-                    minWidth: "100%"
-                });
             });
-
-        Object.assign(templateSetting.settingEl.style, {
-            display: "block"
-        });
-
-        const controlEl = templateSetting.settingEl.querySelector('.setting-item-control') as HTMLElement;
-        if (controlEl) {
-            Object.assign(controlEl.style, {
-                marginTop: "10px"
-            });
-        }
 
         new Setting(containerEl).setName("Cite").setHeading();
 
