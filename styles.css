@@ -6,3 +6,19 @@ available in the app when your plugin is enabled.
 If your plugin does not need CSS, delete this file.
 
 */
+
+/* "Cite paper" modal — minimal overrides on top of Obsidian's native prompt /
+   suggestion classes, so the modal inherits whatever theme the user has active. */
+
+/* The chosen paper is rendered as a .suggestion-item but is display-only:
+   make it non-interactive so it never shows the hover/selected background. */
+.papers-cite-selected {
+    pointer-events: none;
+    background-color: transparent;
+}
+
+/* Hairline between the chosen paper and the alias input, mirroring Obsidian's
+   native divider between the search input and the results list. */
+.papers-cite-name-row {
+    border-top: 1px solid var(--background-modifier-border);
+}

@@ -1,6 +1,7 @@
 import {
     AbstractInputSuggest,
     App,
+    Editor,
     Modal,
     Notice,
     Plugin,
@@ -18,11 +19,13 @@ interface Settings {
     notesFolder: string;
     pdfFolder: string;
     noteTemplate: string;
+    useQueryAsAlias: boolean;
 }
 
 const DEFAULT_SETTINGS: Settings = {
     notesFolder: "",
     pdfFolder: "",
+    useQueryAsAlias: false,
     noteTemplate: `---
 title: "{{TITLE}}"
 authors:
@@ -41,6 +44,13 @@ interface PaperMetadata {
 }
 
 type ImportChoice = PaperMetadata | { isArxivUrl: true; input: string };
+
+interface PaperEntry {
+    file: TFile;
+    title: string;
+    authors: string[];
+    searchText: string;
+}
 
 const sanitizeTitle = (title: string): string =>
     title.toLowerCase().replace(/[-:,.]/g, ' ').replace(/\s+/g, ' ').trim();
@@ -68,6 +78,12 @@ export default class PapersPlugin extends Plugin {
             callback: () => this.createNoteFromClipboard(),
         });
 
+        this.addCommand({
+            id: "cite",
+            name: "Cite",
+            editorCallback: (editor) => this.showCiteModal(editor),
+        });
+
         this.addSettingTab(new PapersSettingTab(this.app, this));
     }
 
@@ -80,6 +96,56 @@ export default class PapersPlugin extends Plugin {
                 : this.createNoteFromMetadata(choice);
             void task;
         }).open();
+    }
+
+    async showCiteModal(editor: Editor) {
+        const papers = await this.getAllSavedPapers();
+        if (!papers.length) {
+            new Notice("No saved papers found.");
+            return;
+        }
+
+        new CiteSelectModal(this.app, papers, this.settings.useQueryAsAlias, (entry, name) => {
+            const target = entry.file.basename;
+            const display = name || entry.title;
+            const link = (display === target) ? `[[${target}]]` : `[[${target}|${display}]]`;
+            editor.replaceSelection(link);
+        }).open();
+    }
+
+    async getAllSavedPapers(): Promise<PaperEntry[]> {
+        const notesFolder = this.settings.notesFolder.trim();
+        let files: TFile[];
+
+        const folder = notesFolder
+            ? this.app.vault.getAbstractFileByPath(notesFolder)
+            : null;
+
+        if (folder instanceof TFolder) {
+            files = folder.children.filter(
+                (f): f is TFile => f instanceof TFile && f.extension === "md"
+            );
+        } else {
+            const prefix = notesFolder ? notesFolder + "/" : "";
+            files = this.app.vault
+                .getMarkdownFiles()
+                .filter(f => !prefix || f.path.startsWith(prefix));
+        }
+
+        const entries = await Promise.all(files.map(async (file) => {
+            const frontmatter = this.app.metadataCache.getFileCache(file)?.frontmatter;
+            const title = frontmatter?.title ?? file.basename;
+            const rawAuthors = frontmatter?.authors;
+            const authors: string[] = Array.isArray(rawAuthors)
+                ? rawAuthors
+                : rawAuthors ? [rawAuthors] : [];
+            const content = await this.app.vault.cachedRead(file);
+            const searchText = `${title}\n${authors.join(" ")}\n${content}`.toLowerCase();
+
+            return { file, title, authors, searchText } as PaperEntry;
+        }));
+
+        return entries;
     }
 
     async processArxivUrl(input: string) {
@@ -471,6 +537,135 @@ class ImportSelectModal extends SuggestModal<PaperMetadata> {
     }
 }
 
+class CiteSelectModal extends SuggestModal<PaperEntry> {
+    papers: PaperEntry[];
+    useQueryAsAlias: boolean;
+    onPick: (entry: PaperEntry, name: string) => void;
+    selectedPaper: PaperEntry | null = null;
+    nameInputEl: HTMLInputElement | null = null;
+
+    constructor(app: App, papers: PaperEntry[], useQueryAsAlias: boolean, onPick: (entry: PaperEntry, name: string) => void) {
+        super(app);
+        this.papers = papers;
+        this.useQueryAsAlias = useQueryAsAlias;
+        this.onPick = onPick;
+        this.setPlaceholder("Search saved papers...");
+    }
+
+    onOpen() {
+        super.onOpen();
+
+        activeWindow.setTimeout(() => {
+            this.inputEl?.focus();
+        }, 10);
+    }
+
+    getSuggestions(query: string): PaperEntry[] {
+        if (this.selectedPaper) return [];
+
+        const tokens = query.toLowerCase().split(/\s+/).filter(Boolean);
+        const matches = tokens.length
+            ? this.papers.filter(p => tokens.every(t => p.searchText.includes(t)))
+            : this.papers.slice();
+
+        const sanitized = sanitizeTitle(query);
+        return matches.sort((a, b) =>
+            compareTwoStrings(sanitizeTitle(b.title), sanitized) -
+            compareTwoStrings(sanitizeTitle(a.title), sanitized)
+        );
+    }
+
+    renderSuggestion(entry: PaperEntry, el: HTMLElement) {
+        el.createDiv({ text: entry.title });
+        if (entry.authors?.length) {
+            el.createEl("small", { text: entry.authors.join(", ") });
+        }
+    }
+
+    selectSuggestion(value: PaperEntry, evt: MouseEvent | KeyboardEvent) {
+        this.selectedPaper = value;
+
+        // Replace the search box with the chosen paper, rendered inside the
+        // results list so its spacing matches a real list entry exactly.
+        const inputContainer = this.inputEl?.parentElement;
+        inputContainer?.hide();
+
+        const container = this.resultContainerEl;
+        container.empty();
+        const selectedEl = container.createDiv({ cls: "suggestion-item papers-cite-selected" });
+        this.renderSuggestion(value, selectedEl);
+        container.show();
+
+        this.showNameRow(container, evt instanceof KeyboardEvent);
+    }
+
+    showNameRow(anchor: HTMLElement, viaKeyboard: boolean) {
+        if (this.nameInputEl) return;
+
+        const row = createDiv({ cls: "prompt-input-container papers-cite-name-row" });
+        const nameInput = row.createEl("input", {
+            cls: "prompt-input",
+            attr: { type: "text", placeholder: "Enter alias (or leave blank)..." },
+        });
+        anchor.insertAdjacentElement("afterend", row);
+        this.nameInputEl = nameInput;
+
+        // Optionally seed the alias with the search query (still held in inputEl).
+        if (this.useQueryAsAlias) {
+            nameInput.value = this.inputEl?.value.trim() ?? "";
+        }
+
+        // Submit on keyup — Obsidian's modal keymap consumes Enter on keydown.
+        nameInput.addEventListener("keyup", (e) => {
+            if (e.key === "Enter" && this.selectedPaper) {
+                e.preventDefault();
+                e.stopPropagation();
+                e.stopImmediatePropagation();
+                this.onPick(this.selectedPaper, nameInput.value.trim());
+                this.close();
+            }
+        });
+
+        // Backspace on the empty alias input returns to the paper search.
+        nameInput.addEventListener("keydown", (e) => {
+            if (e.key === "Backspace" && nameInput.value === "") {
+                e.preventDefault();
+                this.resetToSearch();
+            }
+        });
+
+        // Move focus to the name input only AFTER the selecting Enter is released,
+        // so its keyup can't land here and submit instantly. (Mouse picks: focus now.)
+        if (viaKeyboard) {
+            const onRelease = (e: KeyboardEvent) => {
+                if (e.key !== "Enter") return;
+                activeWindow.removeEventListener("keyup", onRelease, true);
+                nameInput.focus();
+            };
+            activeWindow.addEventListener("keyup", onRelease, true);
+        } else {
+            activeWindow.setTimeout(() => nameInput.focus(), 10);
+        }
+    }
+
+    resetToSearch() {
+        this.selectedPaper = null;
+
+        // Remove the alias row and reveal the search box again.
+        this.nameInputEl?.parentElement?.remove();
+        this.nameInputEl = null;
+        this.inputEl?.parentElement?.show();
+        this.inputEl?.focus();
+
+        // Re-run the search so the results list replaces the chosen-paper entry.
+        this.inputEl?.dispatchEvent(new Event("input", { bubbles: true }));
+    }
+
+    onChooseSuggestion() {
+        // Handled by selectSuggestion override (two-phase flow).
+    }
+}
+
 class ConfirmOverwriteModal extends Modal {
     onDecision: (overwrite: boolean) => void;
 
@@ -556,6 +751,8 @@ class PapersSettingTab extends PluginSettingTab {
         const { containerEl } = this;
         containerEl.empty();
 
+        new Setting(containerEl).setName("Import").setHeading();
+
         new Setting(containerEl)
             .setName("Notes location")
             .setDesc("Folder to save paper notes.")
@@ -618,5 +815,19 @@ class PapersSettingTab extends PluginSettingTab {
                 marginTop: "10px"
             });
         }
+
+        new Setting(containerEl).setName("Cite").setHeading();
+
+        new Setting(containerEl)
+            .setName("Use query as alias")
+            .setDesc("When citing, prefill the alias input with your search query.")
+            .addToggle(toggle => {
+                toggle
+                    .setValue(this.plugin.settings.useQueryAsAlias)
+                    .onChange(async value => {
+                        this.plugin.settings.useQueryAsAlias = value;
+                        await this.plugin.saveSettings();
+                    });
+            });
     }
 }
