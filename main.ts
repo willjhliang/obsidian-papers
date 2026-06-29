@@ -82,7 +82,14 @@ export default class PapersPlugin extends Plugin {
         this.addCommand({
             id: "cite",
             name: "Cite",
-            editorCallback: (editor) => this.showCiteModal(editor),
+            callback: () => {
+                const editor = this.app.workspace.activeEditor?.editor;
+                if (!editor) {
+                    new Notice("Place your cursor in a note to cite a paper.");
+                    return;
+                }
+                this.showCiteModal(editor);
+            },
         });
 
         this.addSettingTab(new PapersSettingTab(this.app, this));
