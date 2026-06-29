@@ -88,7 +88,7 @@ export default class PapersPlugin extends Plugin {
                     new Notice("Place your cursor in a note to cite a paper.");
                     return;
                 }
-                this.showCiteModal(editor);
+                void this.showCiteModal(editor);
             },
         });
 
@@ -207,8 +207,8 @@ export default class PapersPlugin extends Plugin {
         // Pre-fill and auto-search for clipboard content
         modal.currentInput = clipboardText.trim();
         modal.onOpen = function () {
-            SuggestModal.prototype.onOpen.call(this);
-            activeWindow.setTimeout(() => {
+            void SuggestModal.prototype.onOpen.call(this);
+            window.setTimeout(() => {
                 if (this.inputEl) {
                     this.inputEl.value = clipboardText.trim();
                     this.inputEl.focus();
@@ -315,7 +315,7 @@ export default class PapersPlugin extends Plugin {
             return pdfFilename;
         } catch (error) {
             progressNotice.setMessage(`Failed to download PDF for "${metadata.title}"`);
-            activeWindow.setTimeout(() => progressNotice.hide(), 5000);
+            window.setTimeout(() => progressNotice.hide(), 5000);
             throw new Error(`Failed to download PDF: ${error.message}`);
         }
     }
@@ -404,14 +404,14 @@ class ImportSelectModal extends SuggestModal<PaperMetadata> {
     }
 
     onOpen() {
-        super.onOpen();
+        void super.onOpen();
 
         // if (this.resultContainerEl) {
         //     this.resultContainerEl.style.display = 'none';
         // }
         if (this.resultContainerEl) this.resultContainerEl.hide();
 
-        activeWindow.setTimeout(() => {
+        window.setTimeout(() => {
             if (this.inputEl) {
                 this.inputEl.focus();
                 this.inputEl.addEventListener('keyup', (e) => {
@@ -458,7 +458,7 @@ class ImportSelectModal extends SuggestModal<PaperMetadata> {
     }
 
     manualRefresh() {
-        activeWindow.setTimeout(() => {
+        window.setTimeout(() => {
             if (this.inputEl) {
                 this.inputEl.dispatchEvent(new Event('input', { bubbles: true }));
             }
@@ -558,7 +558,7 @@ class ImportSelectModal extends SuggestModal<PaperMetadata> {
                 }
 
                 const delay = Math.pow(2, attempt - 1) * 1000;
-                await new Promise(resolve => activeWindow.setTimeout(resolve, delay));
+                await new Promise(resolve => window.setTimeout(resolve, delay));
 
                 this.emptyStateText = `Searching arXiv... (retry ${attempt + 1}/${maxRetries})`;
                 this.manualRefresh();
@@ -588,9 +588,9 @@ class CiteSelectModal extends SuggestModal<PaperEntry> {
     }
 
     onOpen() {
-        super.onOpen();
+        void super.onOpen();
 
-        activeWindow.setTimeout(() => {
+        window.setTimeout(() => {
             this.inputEl?.focus();
         }, 10);
     }
@@ -679,7 +679,7 @@ class CiteSelectModal extends SuggestModal<PaperEntry> {
             };
             activeWindow.addEventListener("keyup", onRelease, true);
         } else {
-            activeWindow.setTimeout(() => nameInput.focus(), 10);
+            window.setTimeout(() => nameInput.focus(), 10);
         }
     }
 
